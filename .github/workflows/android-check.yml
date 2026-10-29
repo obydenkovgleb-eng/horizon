@@ -1,0 +1,62 @@
+name: android-check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Host build deps
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Check every crate for Android arm64
+        shell: bash
+        run: |
+          REPORT=android-check-report.txt
+          : > "$REPORT"
+          echo "NDK: ${ANDROID_NDK_HOME:-не задан}" >> "$REPORT"
+          rustc --version >> "$REPORT"
+
+          MEMBERS=$(cargo metadata --no-deps --format-version 1 | python3 -c \
+            'import sys,json; print("\n".join(p["name"] for p in json.load(sys.stdin)["packages"]))')
+
+          OK=(); FAIL=()
+          for m in $MEMBERS; do
+            echo "== $m"
+            if cargo ndk -t arm64-v8a check -p "$m" >"/tmp/ndk_$m.log" 2>&1; then
+              OK+=("$m")
+            else
+              FAIL+=("$m")
+              {
+                echo "##### FAIL: $m"
+                grep -E "^error|-->|could not compile|failed to run custom build" "/tmp/ndk_$m.log" | head -40
+                echo
+              } >> "$REPORT"
+            fi
+          done
+
+          {
+            echo "OK (${#OK[@]}): ${OK[*]:-}"
+            echo "FAIL (${#FAIL[@]}): ${FAIL[*]:-}"
+            echo
+            echo "--- платформенные зависимости ---"
+            grep -nE "alsa|udev|winit|cpal|rodio|wgpu|gilrs|arboard|rfd|dirs|keyring" \
+              Cargo.toml crates/*/Cargo.toml launcher/Cargo.toml 2>/dev/null || true
+          } >> "$REPORT"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-check-report
+          path: android-check-report.txt
